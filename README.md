@@ -10,9 +10,8 @@ _Note_: You need to [cross compile libcore](https://github.com/phil-opp/nightly-
 Copy your `your-target-name.json` file into the cloned folder and run:
 
 ```
-cargo build --release --features disable_float --target=your-target-name
+cargo build --release --target=your-target-name
 ```
-If you want to build it with float support, just omit the cargo feature.
 
 Then put the resulting `target/your-target-name/release/liballoc.rlib` in your Rust lib folder. For multirust, that folder is:
 
