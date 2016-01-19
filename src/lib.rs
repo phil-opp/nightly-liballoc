@@ -78,7 +78,6 @@
 #![feature(custom_attribute)]
 #![feature(fundamental)]
 #![feature(lang_items)]
-#![feature(num_bits_bytes)]
 #![feature(optin_builtin_traits)]
 #![feature(placement_in_syntax)]
 #![feature(placement_new_protocol)]
@@ -92,10 +91,18 @@
 #![feature(unsize)]
 #![feature(drop_in_place)]
 #![feature(fn_traits)]
+#![feature(const_fn)]
 
 #![feature(needs_allocator)]
 
+// Issue# 30592: Systematically use alloc_system during stage0 since jemalloc
+// might be unavailable or disabled
+#![cfg_attr(stage0, feature(alloc_system))]
+
 #![cfg_attr(test, feature(test, rustc_private, box_heap))]
+
+#[cfg(stage0)]
+extern crate alloc_system;
 
 // Allow testing this library
 
@@ -127,15 +134,6 @@ mod boxed_test;
 pub mod arc;
 pub mod rc;
 pub mod raw_vec;
+pub mod oom;
 
-/// Common out-of-memory routine
-#[cold]
-#[inline(never)]
-#[unstable(feature = "oom", reason = "not a scrutinized interface",
-           issue = "27700")]
-pub fn oom() -> ! {
-    // FIXME(#14674): This really needs to do something other than just abort
-    //                here, but any printing done must be *guaranteed* to not
-    //                allocate.
-    unsafe { core::intrinsics::abort() }
-}
+pub use oom::oom;
