@@ -16,6 +16,9 @@ cd nightly-liballoc
 rm -r src
 cp -r ../rust/src/liballoc src
 
+# remove official Cargo.toml in favor of our own
+rm src/Cargo.toml
+
 # try to build it
 cargo build
 
