@@ -98,7 +98,6 @@
 #![feature(fundamental)]
 #![feature(generic_param_attrs)]
 #![feature(i128_type)]
-#![feature(inclusive_range)]
 #![feature(iter_rfold)]
 #![feature(lang_items)]
 #![feature(needs_allocator)]
@@ -117,6 +116,7 @@
 #![feature(staged_api)]
 #![feature(str_internals)]
 #![feature(trusted_len)]
+#![feature(try_reserve)]
 #![feature(unboxed_closures)]
 #![feature(unicode)]
 #![feature(unsize)]
@@ -124,6 +124,7 @@
 #![feature(on_unimplemented)]
 #![feature(exact_chunks)]
 #![feature(pointer_methods)]
+#![feature(inclusive_range_fields)]
 
 #![cfg_attr(not(test), feature(fn_traits, placement_new_protocol, swap_with_slice, i128))]
 #![cfg_attr(test, feature(test, box_heap))]
