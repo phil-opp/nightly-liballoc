@@ -66,7 +66,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use core::cmp::Ordering;
+use core::cmp::{self, Ordering};
 use core::fmt;
 use core::hash::{self, Hash};
 use core::intrinsics::{arith_offset, assume};
@@ -75,7 +75,8 @@ use core::marker::PhantomData;
 use core::mem;
 #[cfg(not(test))]
 use core::num::Float;
-use core::ops::{InPlace, Index, IndexMut, Place, Placer};
+use core::ops::Bound::{Excluded, Included, Unbounded};
+use core::ops::{InPlace, Index, IndexMut, Place, Placer, RangeBounds};
 use core::ops;
 use core::ptr;
 use core::ptr::NonNull;
@@ -85,9 +86,7 @@ use borrow::ToOwned;
 use borrow::Cow;
 use boxed::Box;
 use raw_vec::RawVec;
-use super::range::RangeArgument;
 use super::allocator::CollectionAllocErr;
-use Bound::{Excluded, Included, Unbounded};
 
 /// A contiguous growable array type, written `Vec<T>` but pronounced 'vector'.
 ///
@@ -334,9 +333,10 @@ impl<T> Vec<T> {
     /// The vector will be able to hold exactly `capacity` elements without
     /// reallocating. If `capacity` is 0, the vector will not allocate.
     ///
-    /// It is important to note that this function does not specify the *length*
-    /// of the returned vector, but only the *capacity*. For an explanation of
-    /// the difference between length and capacity, see *[Capacity and reallocation]*.
+    /// It is important to note that although the returned vector has the
+    /// *capacity* specified, the vector will have a zero *length*. For an
+    /// explanation of the difference between length and capacity, see
+    /// *[Capacity and reallocation]*.
     ///
     /// [Capacity and reallocation]: #capacity-and-reallocation
     ///
@@ -584,6 +584,31 @@ impl<T> Vec<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn shrink_to_fit(&mut self) {
         self.buf.shrink_to_fit(self.len);
+    }
+
+    /// Shrinks the capacity of the vector with a lower bound.
+    ///
+    /// The capacity will remain at least as large as both the length
+    /// and the supplied value.
+    ///
+    /// Panics if the current capacity is smaller than the supplied
+    /// minimum capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(shrink_to)]
+    /// let mut vec = Vec::with_capacity(10);
+    /// vec.extend([1, 2, 3].iter().cloned());
+    /// assert_eq!(vec.capacity(), 10);
+    /// vec.shrink_to(4);
+    /// assert!(vec.capacity() >= 4);
+    /// vec.shrink_to(0);
+    /// assert!(vec.capacity() >= 3);
+    /// ```
+    #[unstable(feature = "shrink_to", reason = "new API", issue="0")]
+    pub fn shrink_to(&mut self, min_capacity: usize) {
+        self.buf.shrink_to_fit(cmp::max(self.len, min_capacity));
     }
 
     /// Converts the vector into [`Box<[T]>`][owned slice].
@@ -1150,7 +1175,7 @@ impl<T> Vec<T> {
     /// ```
     #[stable(feature = "drain", since = "1.6.0")]
     pub fn drain<R>(&mut self, range: R) -> Drain<T>
-        where R: RangeArgument<usize>
+        where R: RangeBounds<usize>
     {
         // Memory safety
         //
@@ -1924,7 +1949,7 @@ impl<T> Vec<T> {
     #[inline]
     #[stable(feature = "vec_splice", since = "1.21.0")]
     pub fn splice<R, I>(&mut self, range: R, replace_with: I) -> Splice<I::IntoIter>
-        where R: RangeArgument<usize>, I: IntoIterator<Item=T>
+        where R: RangeBounds<usize>, I: IntoIterator<Item=T>
     {
         Splice {
             drain: self.drain(range),
