@@ -56,6 +56,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use core::char::{decode_utf16, REPLACEMENT_CHARACTER};
 use core::fmt;
 use core::hash;
 use core::iter::{FromIterator, FusedIterator};
@@ -63,14 +64,13 @@ use core::ops::Bound::{Excluded, Included, Unbounded};
 use core::ops::{self, Add, AddAssign, Index, IndexMut, RangeBounds};
 use core::ptr;
 use core::str::pattern::Pattern;
-use std_unicode::lossy;
-use std_unicode::char::{decode_utf16, REPLACEMENT_CHARACTER};
+use core::str::lossy;
 
+use alloc::CollectionAllocErr;
 use borrow::{Cow, ToOwned};
+use boxed::Box;
 use str::{self, from_boxed_utf8_unchecked, FromStr, Utf8Error, Chars};
 use vec::Vec;
-use boxed::Box;
-use super::allocator::CollectionAllocErr;
 
 /// A UTF-8 encoded, growable string.
 ///
