@@ -1521,9 +1521,6 @@ impl String {
     /// and replaces it with the given string.
     /// The given string doesn't need to be the same length as the range.
     ///
-    /// Note: Unlike [`Vec::splice`], the replacement happens eagerly, and this
-    /// method does not return the removed chars.
-    ///
     /// # Panics
     ///
     /// Panics if the starting point or end point do not lie on a [`char`]
@@ -1586,6 +1583,7 @@ impl String {
     /// let b = s.into_boxed_str();
     /// ```
     #[stable(feature = "box_str", since = "1.4.0")]
+    #[inline]
     pub fn into_boxed_str(self) -> Box<str> {
         let slice = self.vec.into_boxed_slice();
         unsafe { from_boxed_utf8_unchecked(slice) }
