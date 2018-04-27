@@ -31,7 +31,7 @@ use core::hash::{Hash, Hasher};
 use core::{isize, usize};
 use core::convert::From;
 
-use alloc::{Global, Alloc, Layout, box_free};
+use alloc::{Global, Alloc, Layout, box_free, oom};
 use boxed::Box;
 use string::String;
 use vec::Vec;
@@ -60,7 +60,7 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// ## Thread Safety
 ///
 /// Unlike [`Rc<T>`], `Arc<T>` uses atomic operations for its reference
-/// counting  This means that it is thread-safe. The disadvantage is that
+/// counting. This means that it is thread-safe. The disadvantage is that
 /// atomic operations are more expensive than ordinary memory accesses. If you
 /// are not sharing reference-counted values between threads, consider using
 /// [`Rc<T>`] for lower overhead. [`Rc<T>`] is a safe default, because the
@@ -553,7 +553,7 @@ impl<T: ?Sized> Arc<T> {
         let layout = Layout::for_value(&*fake_ptr);
 
         let mem = Global.alloc(layout)
-            .unwrap_or_else(|_| Global.oom());
+            .unwrap_or_else(|_| oom());
 
         // Initialize the real ArcInner
         let inner = set_data_ptr(ptr as *mut T, mem.as_ptr() as *mut u8) as *mut ArcInner<T>;
