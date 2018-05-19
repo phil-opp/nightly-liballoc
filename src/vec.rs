@@ -73,9 +73,6 @@ use core::intrinsics::{arith_offset, assume};
 use core::iter::{FromIterator, FusedIterator, TrustedLen};
 use core::marker::PhantomData;
 use core::mem;
-#[cfg(not(test))]
-#[cfg(stage0)]
-use core::num::Float;
 use core::ops::Bound::{Excluded, Included, Unbounded};
 use core::ops::{Index, IndexMut, RangeBounds};
 use core::ops;
@@ -2283,6 +2280,13 @@ impl<'a, T: Clone> From<&'a [T]> for Cow<'a, [T]> {
 impl<'a, T: Clone> From<Vec<T>> for Cow<'a, [T]> {
     fn from(v: Vec<T>) -> Cow<'a, [T]> {
         Cow::Owned(v)
+    }
+}
+
+#[stable(feature = "cow_from_vec_ref", since = "1.28.0")]
+impl<'a, T: Clone> From<&'a Vec<T>> for Cow<'a, [T]> {
+    fn from(v: &'a Vec<T>) -> Cow<'a, [T]> {
+        Cow::Borrowed(v.as_slice())
     }
 }
 
