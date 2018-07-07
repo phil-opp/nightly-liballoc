@@ -23,7 +23,7 @@ use core::borrow;
 use core::fmt;
 use core::cmp::Ordering;
 use core::intrinsics::abort;
-use core::mem::{self, align_of_val, size_of_val, uninitialized};
+use core::mem::{self, align_of_val, size_of_val};
 use core::ops::Deref;
 use core::ops::CoerceUnsized;
 use core::ptr::{self, NonNull};
@@ -42,6 +42,9 @@ use vec::Vec;
 /// Going above this limit will abort your program (although not
 /// necessarily) at _exactly_ `MAX_REFCOUNT + 1` references.
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
+
+/// A sentinel value that is used for the pointer of `Weak::new()`.
+const WEAK_EMPTY: usize = 1;
 
 /// A thread-safe reference-counting pointer. 'Arc' stands for 'Atomically
 /// Reference Counted'.
@@ -235,6 +238,10 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Arc<U>> for Arc<T> {}
 /// [`None`]: ../../std/option/enum.Option.html#variant.None
 #[stable(feature = "arc_weak", since = "1.4.0")]
 pub struct Weak<T: ?Sized> {
+    // This is a `NonNull` to allow optimizing the size of this type in enums,
+    // but it is actually not truly "non-null". A `Weak::new()` will set this
+    // to a sentinel value, instead of needing to allocate some space in the
+    // heap.
     ptr: NonNull<ArcInner<T>>,
 }
 
@@ -879,13 +886,14 @@ impl<T: ?Sized> Arc<T> {
         // holder.
         //
         // The acquire label here ensures a happens-before relationship with any
-        // writes to `strong` prior to decrements of the `weak` count (via drop,
-        // which uses Release).
+        // writes to `strong` (in particular in `Weak::upgrade`) prior to decrements
+        // of the `weak` count (via `Weak::drop`, which uses release).  If the upgraded
+        // weak ref was never dropped, the CAS here will fail so we do not care to synchronize.
         if self.inner().weak.compare_exchange(1, usize::MAX, Acquire, Relaxed).is_ok() {
-            // Due to the previous acquire read, this will observe any writes to
-            // `strong` that were due to upgrading weak pointers; only strong
-            // clones remain, which require that the strong count is > 1 anyway.
-            let unique = self.inner().strong.load(Relaxed) == 1;
+            // This needs to be an `Acquire` to synchronize with the decrement of the `strong`
+            // counter in `drop` -- the only access that happens when any but the last reference
+            // is being dropped.
+            let unique = self.inner().strong.load(Acquire) == 1;
 
             // The release write here synchronizes with a read in `downgrade`,
             // effectively preventing the above read of `strong` from happening
@@ -1011,8 +1019,8 @@ impl Arc<Any + Send + Sync> {
 }
 
 impl<T> Weak<T> {
-    /// Constructs a new `Weak<T>`, allocating memory for `T` without initializing
-    /// it. Calling [`upgrade`] on the return value always gives [`None`].
+    /// Constructs a new `Weak<T>`, without allocating any memory.
+    /// Calling [`upgrade`] on the return value always gives [`None`].
     ///
     /// [`upgrade`]: struct.Weak.html#method.upgrade
     /// [`None`]: ../../std/option/enum.Option.html#variant.None
@@ -1029,11 +1037,7 @@ impl<T> Weak<T> {
     pub fn new() -> Weak<T> {
         unsafe {
             Weak {
-                ptr: Box::into_raw_non_null(box ArcInner {
-                    strong: atomic::AtomicUsize::new(0),
-                    weak: atomic::AtomicUsize::new(1),
-                    data: uninitialized(),
-                }),
+                ptr: NonNull::new_unchecked(WEAK_EMPTY as *mut _),
             }
         }
     }
@@ -1070,7 +1074,11 @@ impl<T: ?Sized> Weak<T> {
     pub fn upgrade(&self) -> Option<Arc<T>> {
         // We use a CAS loop to increment the strong count instead of a
         // fetch_add because once the count hits 0 it must never be above 0.
-        let inner = self.inner();
+        let inner = if self.ptr.as_ptr() as *const u8 as usize == WEAK_EMPTY {
+            return None;
+        } else {
+            unsafe { self.ptr.as_ref() }
+        };
 
         // Relaxed load because any write of 0 that we can observe
         // leaves the field in a permanently zero state (so a
@@ -1092,16 +1100,14 @@ impl<T: ?Sized> Weak<T> {
 
             // Relaxed is valid for the same reason it is on Arc's Clone impl
             match inner.strong.compare_exchange_weak(n, n + 1, Relaxed, Relaxed) {
-                Ok(_) => return Some(Arc { ptr: self.ptr, phantom: PhantomData }),
+                Ok(_) => return Some(Arc {
+                    // null checked above
+                    ptr: self.ptr,
+                    phantom: PhantomData,
+                }),
                 Err(old) => n = old,
             }
         }
-    }
-
-    #[inline]
-    fn inner(&self) -> &ArcInner<T> {
-        // See comments above for why this is "safe"
-        unsafe { self.ptr.as_ref() }
     }
 }
 
@@ -1120,11 +1126,16 @@ impl<T: ?Sized> Clone for Weak<T> {
     /// ```
     #[inline]
     fn clone(&self) -> Weak<T> {
+        let inner = if self.ptr.as_ptr() as *const u8 as usize == WEAK_EMPTY {
+            return Weak { ptr: self.ptr };
+        } else {
+            unsafe { self.ptr.as_ref() }
+        };
         // See comments in Arc::clone() for why this is relaxed.  This can use a
         // fetch_add (ignoring the lock) because the weak count is only locked
         // where are *no other* weak pointers in existence. (So we can't be
         // running this code in that case).
-        let old_size = self.inner().weak.fetch_add(1, Relaxed);
+        let old_size = inner.weak.fetch_add(1, Relaxed);
 
         // See comments in Arc::clone() for why we do this (for mem::forget).
         if old_size > MAX_REFCOUNT {
@@ -1139,8 +1150,8 @@ impl<T: ?Sized> Clone for Weak<T> {
 
 #[stable(feature = "downgraded_weak", since = "1.10.0")]
 impl<T> Default for Weak<T> {
-    /// Constructs a new `Weak<T>`, allocating memory for `T` without initializing
-    /// it. Calling [`upgrade`] on the return value always gives [`None`].
+    /// Constructs a new `Weak<T>`, without allocating memory.
+    /// Calling [`upgrade`] on the return value always gives [`None`].
     ///
     /// [`upgrade`]: struct.Weak.html#method.upgrade
     /// [`None`]: ../../std/option/enum.Option.html#variant.None
@@ -1193,7 +1204,13 @@ impl<T: ?Sized> Drop for Weak<T> {
         // weak count can only be locked if there was precisely one weak ref,
         // meaning that drop could only subsequently run ON that remaining weak
         // ref, which can only happen after the lock is released.
-        if self.inner().weak.fetch_sub(1, Release) == 1 {
+        let inner = if self.ptr.as_ptr() as *const u8 as usize == WEAK_EMPTY {
+            return;
+        } else {
+            unsafe { self.ptr.as_ref() }
+        };
+
+        if inner.weak.fetch_sub(1, Release) == 1 {
             atomic::fence(Acquire);
             unsafe {
                 Global.dealloc(self.ptr.cast(), Layout::for_value(self.ptr.as_ref()))
