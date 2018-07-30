@@ -67,7 +67,7 @@ use core::marker::{Unpin, Unsize};
 use core::mem::{self, PinMut};
 use core::ops::{CoerceUnsized, Deref, DerefMut, Generator, GeneratorState};
 use core::ptr::{self, NonNull, Unique};
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Executor, SpawnErrorKind, SpawnObjError};
 
 use raw_vec::RawVec;
 use str::from_boxed_utf8_unchecked;
@@ -194,7 +194,9 @@ impl<T: ?Sized> Box<T> {
     }
 
     /// Consumes and leaks the `Box`, returning a mutable reference,
-    /// `&'a mut T`. Here, the lifetime `'a` may be chosen to be `'static`.
+    /// `&'a mut T`. Note that the type `T` must outlive the chosen lifetime
+    /// `'a`. If the type has only static references, or none at all, then this
+    /// may be chosen to be `'static`.
     ///
     /// This function is mainly useful for data that lives for the remainder of
     /// the program's life. Dropping the returned reference will cause a memory
@@ -967,6 +969,19 @@ unsafe impl<'a, T, F> UnsafeFutureObj<'a, T> for PinBox<F>
 
     unsafe fn drop(ptr: *mut ()) {
         drop(PinBox::from_raw(ptr as *mut F))
+    }
+}
+
+#[unstable(feature = "futures_api", issue = "50547")]
+impl<E> Executor for Box<E>
+    where E: Executor + ?Sized
+{
+    fn spawn_obj(&mut self, task: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+        (**self).spawn_obj(task)
+    }
+
+    fn status(&self) -> Result<(), SpawnErrorKind> {
+        (**self).status()
     }
 }
 
