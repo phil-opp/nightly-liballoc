@@ -126,13 +126,13 @@ impl<T> VecDeque<T> {
     /// Moves an element out of the buffer
     #[inline]
     unsafe fn buffer_read(&mut self, off: usize) -> T {
-        ptr::read(self.ptr().offset(off as isize))
+        ptr::read(self.ptr().add(off))
     }
 
     /// Writes an element into the buffer, moving it.
     #[inline]
     unsafe fn buffer_write(&mut self, off: usize, value: T) {
-        ptr::write(self.ptr().offset(off as isize), value);
+        ptr::write(self.ptr().add(off), value);
     }
 
     /// Returns `true` if and only if the buffer is at full capacity.
@@ -177,8 +177,8 @@ impl<T> VecDeque<T> {
                       src,
                       len,
                       self.cap());
-        ptr::copy(self.ptr().offset(src as isize),
-                  self.ptr().offset(dst as isize),
+        ptr::copy(self.ptr().add(src),
+                  self.ptr().add(dst),
                   len);
     }
 
@@ -197,26 +197,9 @@ impl<T> VecDeque<T> {
                       src,
                       len,
                       self.cap());
-        ptr::copy_nonoverlapping(self.ptr().offset(src as isize),
-                                 self.ptr().offset(dst as isize),
+        ptr::copy_nonoverlapping(self.ptr().add(src),
+                                 self.ptr().add(dst),
                                  len);
-    }
-
-    /// Returns a pair of slices which contain the contents of the buffer not used by the VecDeque.
-    #[inline]
-    unsafe fn unused_as_mut_slices<'a>(&'a mut self) -> (&'a mut [T], &'a mut [T]) {
-        let head = self.head;
-        let tail = self.tail;
-        let buf = self.buffer_as_mut_slice();
-        if head != tail {
-            // In buf, head..tail contains the VecDeque and tail..head is unused.
-            // So calling `ring_slices` with tail and head swapped returns unused slices.
-            RingSlices::ring_slices(buf, tail, head)
-        } else {
-            // Swapping doesn't help when head == tail.
-            let (before, after) = buf.split_at_mut(head);
-            (after, before)
-        }
     }
 
     /// Copies a potentially wrapping block of memory len long from src to dest.
@@ -436,7 +419,7 @@ impl<T> VecDeque<T> {
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len() {
             let idx = self.wrap_add(self.tail, index);
-            unsafe { Some(&*self.ptr().offset(idx as isize)) }
+            unsafe { Some(&*self.ptr().add(idx)) }
         } else {
             None
         }
@@ -465,7 +448,7 @@ impl<T> VecDeque<T> {
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.len() {
             let idx = self.wrap_add(self.tail, index);
-            unsafe { Some(&mut *self.ptr().offset(idx as isize)) }
+            unsafe { Some(&mut *self.ptr().add(idx)) }
         } else {
             None
         }
@@ -501,8 +484,8 @@ impl<T> VecDeque<T> {
         let ri = self.wrap_add(self.tail, i);
         let rj = self.wrap_add(self.tail, j);
         unsafe {
-            ptr::swap(self.ptr().offset(ri as isize),
-                      self.ptr().offset(rj as isize))
+            ptr::swap(self.ptr().add(ri),
+                      self.ptr().add(rj))
         }
     }
 
@@ -1805,20 +1788,20 @@ impl<T> VecDeque<T> {
                 // `at` lies in the first half.
                 let amount_in_first = first_len - at;
 
-                ptr::copy_nonoverlapping(first_half.as_ptr().offset(at as isize),
+                ptr::copy_nonoverlapping(first_half.as_ptr().add(at),
                                          other.ptr(),
                                          amount_in_first);
 
                 // just take all of the second half.
                 ptr::copy_nonoverlapping(second_half.as_ptr(),
-                                         other.ptr().offset(amount_in_first as isize),
+                                         other.ptr().add(amount_in_first),
                                          second_len);
             } else {
                 // `at` lies in the second half, need to factor in the elements we skipped
                 // in the first half.
                 let offset = at - first_len;
                 let amount_in_second = second_len - offset;
-                ptr::copy_nonoverlapping(second_half.as_ptr().offset(offset as isize),
+                ptr::copy_nonoverlapping(second_half.as_ptr().add(offset),
                                          other.ptr(),
                                          amount_in_second);
             }
@@ -1851,148 +1834,8 @@ impl<T> VecDeque<T> {
     #[inline]
     #[stable(feature = "append", since = "1.4.0")]
     pub fn append(&mut self, other: &mut Self) {
-        // Copies all values from `src_slice` to the start of `dst_slice`.
-        unsafe fn copy_whole_slice<T>(src_slice: &[T], dst_slice: &mut [T]) {
-            let len = src_slice.len();
-            ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_slice[..len].as_mut_ptr(), len);
-        }
-
-        let src_total = other.len();
-
-        // Guarantees there is space in `self` for `other`.
-        self.reserve(src_total);
-
-        self.head = {
-            let original_head = self.head;
-
-            // The goal is to copy all values from `other` into `self`. To avoid any
-            // mismatch, all valid values in `other` are retrieved...
-            let (src_high, src_low) = other.as_slices();
-            // and unoccupied parts of self are retrieved.
-            let (dst_high, dst_low) = unsafe { self.unused_as_mut_slices() };
-
-            // Then all that is needed is to copy all values from
-            // src (src_high and src_low) to dst (dst_high and dst_low).
-            //
-            // other [o o o . . . . . o o o o]
-            //       [5 6 7]         [1 2 3 4]
-            //       src_low         src_high
-            //
-            // self  [. . . . . . o o o o . .]
-            //       [3 4 5 6 7 .]       [1 2]
-            //       dst_low             dst_high
-            //
-            // Values are not copied one by one but as slices in `copy_whole_slice`.
-            // What slices are used depends on various properties of src and dst.
-            // There are 6 cases in total:
-            //     1. `src` is contiguous and fits in dst_high
-            //     2. `src` is contiguous and does not fit in dst_high
-            //     3. `src` is discontiguous and fits in dst_high
-            //     4. `src` is discontiguous and does not fit in dst_high
-            //        + src_high is smaller than dst_high
-            //     5. `src` is discontiguous and does not fit in dst_high
-            //        + dst_high is smaller than src_high
-            //     6. `src` is discontiguous and does not fit in dst_high
-            //        + dst_high is the same size as src_high
-            let src_contiguous = src_low.is_empty();
-            let dst_high_fits_src = dst_high.len() >= src_total;
-            match (src_contiguous, dst_high_fits_src) {
-                (true, true) => {
-                    // 1.
-                    // other [. . . o o o . . . . . .]
-                    //       []    [1 1 1]
-                    //
-                    // self  [. o o o o o . . . . . .]
-                    //       [.]         [1 1 1 . . .]
-
-                    unsafe {
-                        copy_whole_slice(src_high, dst_high);
-                    }
-                    original_head + src_total
-                }
-                (true, false) => {
-                    // 2.
-                    // other [. . . o o o o o . . . .]
-                    //       []    [1 1 2 2 2]
-                    //
-                    // self  [. . . . . . . o o o . .]
-                    //       [2 2 2 . . . .]     [1 1]
-
-                    let (src_1, src_2) = src_high.split_at(dst_high.len());
-                    unsafe {
-                        copy_whole_slice(src_1, dst_high);
-                        copy_whole_slice(src_2, dst_low);
-                    }
-                    src_total - dst_high.len()
-                }
-                (false, true) => {
-                    // 3.
-                    // other [o o . . . . . . . o o o]
-                    //       [2 2]             [1 1 1]
-                    //
-                    // self  [. o o . . . . . . . . .]
-                    //       [.]   [1 1 1 2 2 . . . .]
-
-                    let (dst_1, dst_2) = dst_high.split_at_mut(src_high.len());
-                    unsafe {
-                        copy_whole_slice(src_high, dst_1);
-                        copy_whole_slice(src_low, dst_2);
-                    }
-                    original_head + src_total
-                }
-                (false, false) => {
-                    if src_high.len() < dst_high.len() {
-                        // 4.
-                        // other [o o o . . . . . . o o o]
-                        //       [2 3 3]           [1 1 1]
-                        //
-                        // self  [. . . . . . o o . . . .]
-                        //       [3 3 . . . .]   [1 1 1 2]
-
-                        let (dst_1, dst_2) = dst_high.split_at_mut(src_high.len());
-                        let (src_2, src_3) = src_low.split_at(dst_2.len());
-                        unsafe {
-                            copy_whole_slice(src_high, dst_1);
-                            copy_whole_slice(src_2, dst_2);
-                            copy_whole_slice(src_3, dst_low);
-                        }
-                        src_3.len()
-                    } else if src_high.len() > dst_high.len() {
-                        // 5.
-                        // other [o o o . . . . . o o o o]
-                        //       [3 3 3]         [1 1 2 2]
-                        //
-                        // self  [. . . . . . o o o o . .]
-                        //       [2 2 3 3 3 .]       [1 1]
-
-                        let (src_1, src_2) = src_high.split_at(dst_high.len());
-                        let (dst_2, dst_3) = dst_low.split_at_mut(src_2.len());
-                        unsafe {
-                            copy_whole_slice(src_1, dst_high);
-                            copy_whole_slice(src_2, dst_2);
-                            copy_whole_slice(src_low, dst_3);
-                        }
-                        dst_2.len() + src_low.len()
-                    } else {
-                        // 6.
-                        // other [o o . . . . . . . o o o]
-                        //       [2 2]             [1 1 1]
-                        //
-                        // self  [. . . . . . . o o . . .]
-                        //       [2 2 . . . . .]   [1 1 1]
-
-                        unsafe {
-                            copy_whole_slice(src_high, dst_high);
-                            copy_whole_slice(src_low, dst_low);
-                        }
-                        src_low.len()
-                    }
-                }
-            }
-        };
-
-        // Some values now exist in both `other` and `self` but are made inaccessible in `other`.
-        other.tail = other.head;
+        // naive impl
+        self.extend(other.drain(..));
     }
 
     /// Retains only the elements specified by the predicate.
@@ -2145,11 +1988,11 @@ pub struct Iter<'a, T: 'a> {
 #[stable(feature = "collection_debug", since = "1.17.0")]
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let (front, back) = RingSlices::ring_slices(self.ring, self.head, self.tail);
         f.debug_tuple("Iter")
-         .field(&self.ring)
-         .field(&self.tail)
-         .field(&self.head)
-         .finish()
+            .field(&front)
+            .field(&back)
+            .finish()
     }
 }
 
@@ -2242,11 +2085,11 @@ pub struct IterMut<'a, T: 'a> {
 #[stable(feature = "collection_debug", since = "1.17.0")]
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for IterMut<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let (front, back) = RingSlices::ring_slices(&*self.ring, self.head, self.tail);
         f.debug_tuple("IterMut")
-         .field(&self.ring)
-         .field(&self.tail)
-         .field(&self.head)
-         .finish()
+            .field(&front)
+            .field(&back)
+            .finish()
     }
 }
 
@@ -2709,24 +2552,24 @@ impl<T> From<VecDeque<T>> for Vec<T> {
 
             // Need to move the ring to the front of the buffer, as vec will expect this.
             if other.is_contiguous() {
-                ptr::copy(buf.offset(tail as isize), buf, len);
+                ptr::copy(buf.add(tail), buf, len);
             } else {
                 if (tail - head) >= cmp::min(cap - tail, head) {
                     // There is enough free space in the centre for the shortest block so we can
                     // do this in at most three copy moves.
                     if (cap - tail) > head {
                         // right hand block is the long one; move that enough for the left
-                        ptr::copy(buf.offset(tail as isize),
-                                  buf.offset((tail - head) as isize),
+                        ptr::copy(buf.add(tail),
+                                  buf.add(tail - head),
                                   cap - tail);
                         // copy left in the end
-                        ptr::copy(buf, buf.offset((cap - head) as isize), head);
+                        ptr::copy(buf, buf.add(cap - head), head);
                         // shift the new thing to the start
-                        ptr::copy(buf.offset((tail - head) as isize), buf, len);
+                        ptr::copy(buf.add(tail - head), buf, len);
                     } else {
                         // left hand block is the long one, we can do it in two!
-                        ptr::copy(buf, buf.offset((cap - tail) as isize), head);
-                        ptr::copy(buf.offset(tail as isize), buf, cap - tail);
+                        ptr::copy(buf, buf.add(cap - tail), head);
+                        ptr::copy(buf.add(tail), buf, cap - tail);
                     }
                 } else {
                     // Need to use N swaps to move the ring
@@ -2751,7 +2594,7 @@ impl<T> From<VecDeque<T>> for Vec<T> {
                         for i in left_edge..right_edge {
                             right_offset = (i - left_edge) % (cap - right_edge);
                             let src: isize = (right_edge + right_offset) as isize;
-                            ptr::swap(buf.offset(i as isize), buf.offset(src));
+                            ptr::swap(buf.add(i), buf.offset(src));
                         }
                         let n_ops = right_edge - left_edge;
                         left_edge += n_ops;
@@ -3121,6 +2964,23 @@ mod tests {
                     create_vec_and_test_convert(cap, offset, len)
                 }
             }
+        }
+    }
+
+    #[test]
+    fn issue_53529() {
+        use boxed::Box;
+
+        let mut dst = VecDeque::new();
+        dst.push_front(Box::new(1));
+        dst.push_front(Box::new(2));
+        assert_eq!(*dst.pop_back().unwrap(), 1);
+
+        let mut src = VecDeque::new();
+        src.push_front(Box::new(2));
+        dst.append(&mut src);
+        for a in dst {
+            assert_eq!(*a, 2);
         }
     }
 
